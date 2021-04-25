@@ -1,0 +1,169 @@
+<?php
+
+/**
+ * @file
+ * Notifies users about new private messages via email.
+ */
+
+use Drupal\Core\Form\FormStateInterface;
+use Drupal\ptalk\MessageInterface;
+use Drupal\Component\Render\PlainTextOutput;
+
+/**
+ * Implements hook_mail().
+ */
+function ptalk_email_notification_mail($key, &$message, $params) {
+  $token_service = \Drupal::token();
+  $language_manager = \Drupal::languageManager();
+  $langcode = $message['langcode'];
+  $variables = ['user' => $params['recipient'], 'ptalk_message' => $params['message']];
+
+  $language = $language_manager->getLanguage($params['recipient']->getPreferredLangcode());
+  $original_language = $language_manager->getConfigOverrideLanguage();
+  $language_manager->setConfigOverrideLanguage($language);
+  $mail_config = \Drupal::config('ptalk_email_notification.settings');
+
+  $token_options = ['langcode' => $langcode, 'callback' => 'user_mail_tokens', 'clear' => TRUE];
+  $message['subject'] .= PlainTextOutput::renderFromHtml($token_service->replace($mail_config->get($key . '.subject'), $variables, $token_options));
+  $message['body'][] = $token_service->replace($mail_config->get($key . '.body'), $variables, $token_options);
+  $language_manager->setConfigOverrideLanguage($original_language);
+}
+
+/**
+ * Implements hook_ENTITY_TYPE_insert().
+ */
+function ptalk_email_notification_ptalk_message_insert(MessageInterface $message) {
+  $config = \Drupal::config('ptalk_email_notification.settings');
+
+  foreach ($message->recipients as $recipient) {
+    if ($recipient->recipient_info->email_notification || ($recipient->recipient_info->email_notification == NULL && $config->get('ptalk_email_notification_default'))) {
+      $params['message'] = $message;
+      $params['recipient'] = $recipient;
+      $langcode = $recipient->getPreferredLangcode();
+
+      // Get the custom site notification email.
+      $site_mail = \Drupal::config('system.site')->get('mail_notification');
+      if (empty($site_mail)) {
+        $site_mail = \Drupal::config('system.site')->get('mail');
+      }
+      if (empty($site_mail)) {
+        $site_mail = ini_get('sendmail_from');
+      }
+
+      $mail = \Drupal::service('plugin.manager.mail')->mail('ptalk_email_notification', 'ptalk_email_notification', $recipient->getEmail(), $langcode, $params, $site_mail);
+    }
+  }
+}
+
+/**
+ * Implements hook_query_ptalk_load_message_recipients_alter().
+ */
+function ptalk_email_notification_query_ptalk_load_message_recipients_alter($query) {
+  // Loads information of the status email notification (disabled/enabled).
+  $query->leftJoin('users_data', 'ud', "u.uid = ud.uid AND ud.module = 'ptalk_email_notification' AND ud.name = 'email_notification'");
+  $query->addField('ud', 'value', 'email_notification');
+}
+
+/**
+ * Implements hook_form_alter().
+ */
+function ptalk_email_notification_form_alter(array &$form, FormStateInterface $form_state, $form_id) {
+  if ($form_id == 'user_form') {
+    $user = $form_state->getFormObject()->getEntity();
+    if ($user->hasPermission('read private conversation')) {
+      if (!isset($form['ptalk'])) {
+        $form['ptalk'] = [
+          '#type' => 'details',
+          '#title' => t('Private conversations'),
+          '#open' => TRUE,
+          '#weight' => 10,
+        ];
+      }
+
+      $user_data = \Drupal::service('user.data');
+      $email_notification = $user_data->get('ptalk_email_notification', $user->id(), 'email_notification');
+      $config = \Drupal::config('ptalk_email_notification.settings');
+      $form['ptalk']['ptalk_email_notification'] = [
+        '#type' => 'checkbox',
+        '#title' => t('Email notification'),
+        '#default_value' => !is_null($email_notification) ? $email_notification : $config->get('ptalk_email_notification_default'),
+        '#description' => t('Receive email notification for incoming private messages.'),
+        '#weight' => -10,
+      ];
+
+      $form['actions']['submit']['#submit'][] = 'ptalk_email_notification_user_form_submit';
+    }
+  }
+}
+
+/**
+ * Submit handler to enabling/disabling email notification.
+ */
+function ptalk_email_notification_user_form_submit(array &$form, FormStateInterface $form_state) {
+  $user = $form_state->getFormObject()->getEntity();
+  // Store setting for specific user using 'user.data' service.
+  $user_data = \Drupal::service('user.data');
+  $user_data->set('ptalk_email_notification', $user->id(), 'email_notification', $form_state->getValue(['ptalk_email_notification']));
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ */
+function ptalk_email_notification_form_ptalk_admin_settings_alter(array &$form, FormStateInterface $form_state, $form_id) {
+  $config = \Drupal::config('ptalk_email_notification.settings');
+
+  $form['ptalk_email_notification'] = array(
+    '#type' => 'details',
+    '#title' => t('Email notification'),
+    '#group' => 'settings',
+  );
+
+  $form['ptalk_email_notification']['ptalk_email_notification_default'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Notify users of new private messages by default'),
+    '#default_value' => $config->get('ptalk_email_notification_default', TRUE),
+  );
+
+  $form['ptalk_email_notification']['ptalk_email_notification_subject'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Subject of notification message'),
+    '#default_value' => $config->get('ptalk_email_notification.subject'),
+  );
+
+  $form['ptalk_email_notification']['ptalk_email_notification_body'] = array(
+    '#type' => 'textarea',
+    '#title' => t('Body of notification message'),
+    '#default_value' => $config->get('ptalk_email_notification.body'),
+  );
+
+  if (\Drupal::service('module_handler')->moduleExists('token')) {
+    $form['ptalk_email_notification']['token_help'] = [
+      '#theme' => 'token_tree_link',
+      '#token_types' => ['ptalk_message', 'user'],
+    ];
+  }
+  else {
+    $form['ptalk_email_notification']['token_help'] = [
+      '#type' => 'details',
+      '#title' => t('Available tokens'),
+      '#description' => t('Available variables are: [ptalk_message:author], [ptalk_message:url], [site:name], [site:url], [user:display-name], [user:account-name], [user:mail], [site:login-url], [site:url-brief], [user:edit-url], [user:one-time-login-url], [user:cancel-url].'),
+      '#group' => 'ptalk_email_notification',
+    ];
+  }
+
+  $form['#submit'][] = 'ptalk_email_notification_ptalk_admin_settings_submit';
+
+  return $form;
+}
+
+/**
+ * Submit handler for email notification settings.
+ */
+function ptalk_email_notification_ptalk_admin_settings_submit(array &$form, FormStateInterface $form_state) {
+  \Drupal::service('config.factory')
+    ->getEditable('ptalk_email_notification.settings')
+    ->set('ptalk_email_notification_default', $form_state->getValue('ptalk_email_notification_default'))
+    ->set('ptalk_email_notification.subject', $form_state->getValue('ptalk_email_notification_subject'))
+    ->set('ptalk_email_notification.body', $form_state->getValue('ptalk_email_notification_body'))
+    ->save();
+}

@@ -1,0 +1,7 @@
+name: Ptalk Email Notification
+type: module
+description: Notifies users about new private messages via email.
+package: Mail
+core: 8.x
+dependencies:
+  - ptalk
