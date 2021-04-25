@@ -1,0 +1,4 @@
+ptalk_email_notification_default: true
+ptalk_email_notification:
+  body: "Hi [user:display-name].\n\nThis is an automatic reminder from the site [site:name]. You have received a new private message from [ptalk_message:author].\n\nTo read your message, follow this link:\n[ptalk_message:url]\n\nIf you don't want to receive this email again, change your preferences here:\n[user:edit-url]"
+  subject: 'New private message at [site:name]'

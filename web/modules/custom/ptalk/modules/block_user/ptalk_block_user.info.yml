@@ -1,0 +1,7 @@
+name: Block User Messages
+type: module
+description: Allows users to block other users from sending them messages.
+package: Mail
+core: 8.x
+dependencies:
+  - ptalk
